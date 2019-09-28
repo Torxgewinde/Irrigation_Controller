@@ -103,8 +103,8 @@ void Log(String text) {
 }
 
 /******************************************************************************
-Description.: write a log message
-Input Value.: String with the log message
+Description.: push status to MQTT broker
+Input Value.: -
 Return Value: -
 ******************************************************************************/
 void PushStatusViaMQTT() {
