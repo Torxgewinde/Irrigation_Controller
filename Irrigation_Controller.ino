@@ -26,7 +26,7 @@ Ticker ValveWatchdog;
 #define MAX_VALVE_ON_TIME_IN_S 60*60
 unsigned long ValveWatchdogFeedingTime = 0;
 
-#define STATUS_PUSH_INTERVAL_IN_MS 1000*300
+#define STATUS_PUSH_INTERVAL_IN_MS 1000*2
 
 /****************************************************************************************************************/
 std::map<String, String> WiFi_map = {
@@ -103,8 +103,8 @@ void Log(String text) {
 }
 
 /******************************************************************************
-Description.: push status to MQTT broker
-Input Value.: -
+Description.: write a log message
+Input Value.: String with the log message
 Return Value: -
 ******************************************************************************/
 void PushStatusViaMQTT() {
@@ -117,6 +117,8 @@ void PushStatusViaMQTT() {
   MQTTClient.publish(MQTTRootTopic+"/uptime", String(millis()), false, 2);
   MQTTClient.publish(MQTTRootTopic+"/FreeHeap", String(ESP.getFreeHeap()), false, 2);
   MQTTClient.publish(MQTTRootTopic+"/ValveWatchdogLastFed", String(millis() - ValveWatchdogFeedingTime), false, 2);
+  MQTTClient.publish(MQTTRootTopic+"/RSSI", String(WiFi.RSSI()), false, 2);
+  MQTTClient.publish(MQTTRootTopic+"/TxPower", String(WiFi.getTxPower()), false, 2);
 }
 
 /******************************************************************************
@@ -301,9 +303,24 @@ Return Value: -
 void loop() {
   static unsigned long then = STATUS_PUSH_INTERVAL_IN_MS;
 
-  //give these tasks CPU cycles
-  wifiMulti.run();
+  //handle WiFi connection and loss of connection
+  if(wifiMulti.run() != WL_CONNECTED) {
+    Log("WiFi NOT ok, retrying");
+    for(int i=0; i<10; i++) {
+	  delay(5000);
+	  if(wifiMulti.run() == WL_CONNECTED) {
+		//now the connection seems to be OK again, just leave this loop()
+        return;
+      }
+    }
+    Log("WiFi still NOT ok, tried several times, resetting the whole board");
+    ESP.restart();
+  }
+  
+  //handle webserver task
   server.handleClient();
+  
+  //handle MQTT task
   MQTTClient.loop();
 
   //if MQTT lost connection re-establish it
