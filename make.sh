@@ -1,17 +1,18 @@
 #!/bin/bash
 
 #Arduino IDE
-ARDUINO_VERSION_TO_USE="1.8.9"
+ARDUINO_VERSION_TO_USE="1.8.12"
 
 # Use this ESP32 compiler version
-ESP32_TOOLCHAIN_VERSION_TO_USE="1.0.3"
+ESP32_TOOLCHAIN_VERSION_TO_USE="1.0.4"
 
 # Install the following, additional libraries
-ARDUINO_LIBRARIES_TO_USE="MQTT:2.4.3"
+ARDUINO_LIBRARIES_TO_USE="MQTT:2.4.7"
     
 # Values for boards are derived from boards.txt (/tmp/arduino/portable/packages/esp32/hardware/esp32/1.0.3/) file
 BOARD="esp32:esp32:esp32:PSRAM=disabled,PartitionScheme=default,CPUFreq=240,FlashMode=qio,FlashFreq=80,FlashSize=4M,DebugLevel=none"
 
+#IDE folder
 IDE_FOLDER="/tmp/arduino"
 BUILD_FOLDER="build"
 
