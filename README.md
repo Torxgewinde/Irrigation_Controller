@@ -3,6 +3,7 @@ Simple, minimalistic Arduino sketch for eight irrigation valves
 
 <img src="pictures/IMG_1156.GIF" width="240">
 <img src="pictures/IMG_2008.JPG" width="240">
+<img src="pictures/IMG_2010.JPG" width="240">
 
 Features
 --------
