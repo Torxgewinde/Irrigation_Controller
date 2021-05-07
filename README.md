@@ -1,5 +1,5 @@
 # Irrigation Controller
-Simple, minimalistic Arduino sketch for eight irrigation valves
+Simple, minimalistic Arduino sketch for eight irrigation valves. To control the valves publish MQTT messages. This is not a standalone Irrigation Controller! Commands are expected to be published by another (Home-Automation) System like FHEM, Homeassistant, OpenHAB, or a MQTT-remote ...
 
 <img src="pictures/IMG_1156.GIF" width="240">
 <img src="pictures/IMG_2008.JPG" width="240">
@@ -28,7 +28,7 @@ Hardware
   
   Design notes
   ----------------
-  Irrigation valves are designed for 24VAC (alternating current, not DC). This is the most common voltage across different brands. Due to this a transformer is required. This transformer is connected to the mains for probably years and must withstand possible transient voltages (voltage spikes) that might occur. Long lasting and cheap are DIN-rail mounted doorbell transformers, but those either do not specify the idle current or it is not really good. A toroid transformer has fewer losses, but the hardware is more expensive. Regardless of the transformer, the output must provide a safe isolation between input and output. Look for appropriate safety marks, otherwise the output might sooner or later become a hazardous voltage.
+  Irrigation valves are designed for 24VAC (alternating current, not DC). This is the most common voltage across different brands. Due to this a transformer is required. This transformer is connected to the mains for probably years and must withstand possible transient voltages (voltage spikes) that might occur. Long lasting and cheap are DIN-rail mounted doorbell transformers, but those either do not specify the idle current or it is not really good. A toroid transformer has fewer losses (~40 times less losses than rectangular transformers in idle state). Regardless of the transformer, the output must provide a safe isolation between input and output. Look for appropriate safety marks, otherwise the output might sooner or later become a hazardous voltage.
 
 It would be possible to simply use a SONOFF 4CH, but that would introduce another transformer (internal to the device) with a little extra idle current.
 
