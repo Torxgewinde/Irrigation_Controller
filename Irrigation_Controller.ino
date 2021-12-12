@@ -1,7 +1,30 @@
 
+/*******************************************************************************
+#                                                                              #
+#     A minimal firmware for ESP32, MQTT and TLS                               #
+#                                                                              #
+#                                                                              #
+#      Copyright (C) 2021 Tom Stöveken                                         #
+#                                                                              #
+# This program is free software; you can redistribute it and/or modify         #
+# it under the terms of the GNU General Public License as published by         #
+# the Free Software Foundation; version 2 of the License.                      #
+#                                                                              #
+# This program is distributed in the hope that it will be useful,              #
+# but WITHOUT ANY WARRANTY; without even the implied warranty of               #
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the                #
+# GNU General Public License for more details.                                 #
+#                                                                              #
+# You should have received a copy of the GNU General Public License            #
+# along with this program; if not, write to the Free Software                  #
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA    #
+#                                                                              #
+********************************************************************************/
+
 #include <map>
 #include <string>
 #include <iterator>
+#include <deque>
 
 #include <WiFi.h>
 #include <WiFiMulti.h>
@@ -18,6 +41,16 @@
 WiFiClientSecure net;
 MQTTClient MQTTClient;
 
+// queue to publish states later, not from within the receive routine
+struct MQTTMessageQueueItem {
+  String topic;
+  String message;
+  bool retained;
+  int qos;
+};
+std::deque<struct MQTTMessageQueueItem> MQTTMessageQueue;
+unsigned long MQTTDroppedMessages = 0;
+
 WiFiMulti wifiMulti;
 
 WebServer server(80);
@@ -26,7 +59,7 @@ Ticker ValveWatchdog;
 #define MAX_VALVE_ON_TIME_IN_S 60*60
 unsigned long ValveWatchdogFeedingTime = 0;
 
-#define STATUS_PUSH_INTERVAL_IN_MS 1000*2
+#define STATUS_PUSH_INTERVAL_IN_MS 1000*60
 
 /****************************************************************************************************************/
 std::map<String, String> WiFi_map = {
@@ -38,60 +71,48 @@ std::map<String, String> WiFi_map = {
 String UpdateUsername = "Nutzername";
 String UpdatePassword = "Passwort";
 
+//https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv
+//configure DST, Timezone and NTP server
+#define TIMEZONE "CET-1CEST,M3.5.0,M10.5.0/3"
+#define NTP_SERVER "your_timeserver.tld"
+
 String MQTTServerName = "mqttserver.lan";
 uint16_t MQTTPort = 8883;
 String MQTTUsername = "username";
 String MQTTPassword = "supersecret";
 String MQTTDeviceName = "IrrigationController";
 String MQTTRootTopic = "garden/irrigation";
-String MQTTRootCA = "-----BEGIN CERTIFICATE-----\n" \
-                    "1234567890123456789012345678901234567890123456789012345678901234\n" \
-                    "1234567890123456789012345678901234567890123456789012345678901234\n" \
-                    "1234567890123456789012345678901234567890123456789012345678901234\n" \
-                    "1234567890123456789012345678901234567890123456789012345678901234\n" \
-                    "1234567890123456789012345678901234567890123456789012345678901234\n" \
-                    "1234567890123456789012345678901234567890123456789012345678901234\n" \
-                    "1234567890123456789012345678901234567890123456789012345678901234\n" \
-                    "1234567890123456789012345678901234567890123456789012345678901234\n" \
-                    ...
-                    "123456=\n" \
-                    "-----END CERTIFICATE-----\n";
+const char MQTTRootCA[] PROGMEM = R"CERT(
+-----BEGIN CERTIFICATE-----
+1234567890123456789012345678901234567890123456789012345678901234
+1234567890123456789012345678901234567890123456789012345678901234
+1234567890123456789012345678901234567890123456789012345678901234
+1234567890123456789012345678901234567890123456789012345678901234
+1234567890123456789012345678901234567890123456789012345678901234
+1234567890123456789012345678901234567890123456789012345678901234
+1234567890123456789012345678901234567890123456789012345678901234
+1234567890123456789012345678901234567890123456789012345678901234
+1234567890123456789012345678901234567890123456789012345678901234
+1234567890123456789012345678901234567890123456789012345678901234
+1234567890123456789012345678901234567890123456789012345678901234
+...
+1234567890123456789012345678901234567890123456789012345678901234
+1234567890123456789012345678901234567890123456789012345678901234
+123456=
+-----END CERTIFICATE-----
+)CERT";
 
-std::map<String, uint8_t> io_map = {
-  {"Relais #1", 13},
-  {"Relais #2", 22},
-  {"Relais #3", 14},
-  {"Relais #4", 27},
-  {"Relais #5", 26},
-  {"Relais #6", 25},
-  {"Relais #7", 33},
-  {"Relais #8", 32}
+//define outputs of device: "name", GPIO
+std::map<String, int> outputs = {
+  {"0", 13},
+  {"1", 22},
+  {"2", 14},
+  {"3", 27},
+  {"4", 26},
+  {"5", 25},
+  {"6", 33},
+  {"7", 32},
 };
-
-void setValve(String valveName, String state);
-String getValve(String valveName);
-
-std::map<String, std::function<void(String)>> topic_map = {
-  { MQTTRootTopic+"/relay/0/set", [](String payload) { setValve("Relais #1", payload);} },
-  { MQTTRootTopic+"/relay/1/set", [](String payload) { setValve("Relais #2", payload);} },
-  { MQTTRootTopic+"/relay/2/set", [](String payload) { setValve("Relais #3", payload);} },
-  { MQTTRootTopic+"/relay/3/set", [](String payload) { setValve("Relais #4", payload);} },
-  { MQTTRootTopic+"/relay/4/set", [](String payload) { setValve("Relais #5", payload);} },
-  { MQTTRootTopic+"/relay/5/set", [](String payload) { setValve("Relais #6", payload);} },
-  { MQTTRootTopic+"/relay/6/set", [](String payload) { setValve("Relais #7", payload);} },
-  { MQTTRootTopic+"/relay/7/set", [](String payload) { setValve("Relais #8", payload);} },
-  { MQTTRootTopic+"/relay/0/get", [](String payload) { MQTTClient.publish(MQTTRootTopic+"/relay/0", getValve("Relais #1"), false, 2);} },
-  { MQTTRootTopic+"/relay/1/get", [](String payload) { MQTTClient.publish(MQTTRootTopic+"/relay/1", getValve("Relais #2"), false, 2);} },
-  { MQTTRootTopic+"/relay/2/get", [](String payload) { MQTTClient.publish(MQTTRootTopic+"/relay/2", getValve("Relais #3"), false, 2);} },
-  { MQTTRootTopic+"/relay/3/get", [](String payload) { MQTTClient.publish(MQTTRootTopic+"/relay/3", getValve("Relais #4"), false, 2);} },
-  { MQTTRootTopic+"/relay/4/get", [](String payload) { MQTTClient.publish(MQTTRootTopic+"/relay/4", getValve("Relais #5"), false, 2);} },
-  { MQTTRootTopic+"/relay/5/get", [](String payload) { MQTTClient.publish(MQTTRootTopic+"/relay/5", getValve("Relais #6"), false, 2);} },
-  { MQTTRootTopic+"/relay/6/get", [](String payload) { MQTTClient.publish(MQTTRootTopic+"/relay/6", getValve("Relais #7"), false, 2);} },
-  { MQTTRootTopic+"/relay/7/get", [](String payload) { MQTTClient.publish(MQTTRootTopic+"/relay/7", getValve("Relais #8"), false, 2);} }
-};
-/****************************************************************************************************************/
-
-
 
 /******************************************************************************
 Description.: write a log message
@@ -103,27 +124,35 @@ void Log(String text) {
 }
 
 /******************************************************************************
-Description.: write a log message
-Input Value.: String with the log message
+Description.: publish whole status via MQTT
+Input Value.: -
 Return Value: -
 ******************************************************************************/
 void PushStatusViaMQTT() {
-  int i=0;
-  
-  for(auto it = io_map.begin(); it != io_map.end(); it++, i++) {
-    MQTTClient.publish(MQTTRootTopic+"/relay/"+String(i), getValve(it->first), false, 2);
+  for(auto i = outputs.begin(); i != outputs.end(); i++) {
+    MQTTClient.publish(
+      MQTTRootTopic + "/relay/" + i->first,
+      getValve(i->first),
+      true, 2);
   }
 
-  MQTTClient.publish(MQTTRootTopic+"/uptime", String(millis()), false, 2);
-  MQTTClient.publish(MQTTRootTopic+"/FreeHeap", String(ESP.getFreeHeap()), false, 2);
-  MQTTClient.publish(MQTTRootTopic+"/ValveWatchdogLastFed", String(millis() - ValveWatchdogFeedingTime), false, 2);
-  MQTTClient.publish(MQTTRootTopic+"/RSSI", String(WiFi.RSSI()), false, 2);
-  MQTTClient.publish(MQTTRootTopic+"/TxPower", String(WiFi.getTxPower()), false, 2);
+  MQTTClient.publish(MQTTRootTopic+"/status1",
+  "{"
+    "\"FreeHeap\":"+String(ESP.getFreeHeap())+", "+
+    "\"ValveWatchdogLastFed\":"+String(millis() - ValveWatchdogFeedingTime)+", "+
+    "\"uptime\":"+String(millis())+
+  "}", true, 2);
+  
+  MQTTClient.publish(MQTTRootTopic+"/status2",
+  "{"
+    "\"RSSI\":"+String(WiFi.RSSI())+", "+
+    "\"MQTTDroppedMessages\":"+String(MQTTDroppedMessages)+
+  "}", true, 2);
 }
 
 /******************************************************************************
 Description.: set a valve to open or close, switch all other valves to off
-Input Value.: ValveName as defined in io_map
+Input Value.: ValveName as defined in outputs
               state is either "on" for flow or "off" for no-flow, other strings
               default to no-flow
 Return Value: -
@@ -131,29 +160,43 @@ Return Value: -
 void setValve(String valveName, String state){
   bool relaisstate = (state == "on") ? FLOW : NOFLOW;
 
-  auto it = io_map.find(valveName);
+  auto it = outputs.find(valveName);
 
   // valve name not found, leave this function
-  if(it == io_map.end()) {
+  if(it == outputs.end()) {
     Log("unknown valveName: "+ valveName);
     return;
   }
 
-  int i=0;
-  for(auto jt = io_map.begin(); jt != io_map.end(); i++, jt++) {
+  for(auto jt = outputs.begin(); jt != outputs.end(); jt++) {
     FeedValveWatchdog();
     
     // check if iterators are identical, if yes set it to the desired state which might be "on" or "off"
     if ( jt == it ) {
       digitalWrite(jt->second, relaisstate);
-      MQTTClient.publish(MQTTRootTopic+"/relay/"+String(i), (state == "on") ? state : "off", false, 2);
+
+      struct MQTTMessageQueueItem a;
+      a.message  = (state == "on") ? state : "off";
+      a.topic    = MQTTRootTopic + "/relay/" + it->first;
+      a.retained = true;
+      a.qos      = 2;
+
+      MQTTMessageQueue.push_back(a);
+      
       continue;
     }
 
     // set all other valves to off, inform if a state change was necessary
     if( digitalRead(jt->second) == FLOW ) {
       digitalWrite(jt->second, NOFLOW);
-      MQTTClient.publish(MQTTRootTopic+"/relay/"+String(i), "off", false, 2);
+
+      struct MQTTMessageQueueItem a;
+      a.message  = "off";
+      a.topic    = MQTTRootTopic + "/relay/" + jt->first;
+      a.retained = true;
+      a.qos      = 2;
+
+      MQTTMessageQueue.push_back(a);
     }
   }
 }
@@ -165,21 +208,20 @@ Return Value: -
 ******************************************************************************/
 void FeedValveWatchdog(){
   ValveWatchdog.detach();
-  ValveWatchdog.attach(MAX_VALVE_ON_TIME_IN_S, [](){setValve("Relais #1", "off");});
+  ValveWatchdog.attach(MAX_VALVE_ON_TIME_IN_S, [](){setValve("0", "off");});
   ValveWatchdogFeedingTime = millis();
 }
 
 /******************************************************************************
 Description.: get a valve state
-Input Value.: ValveName as defined in io_map
+Input Value.: ValveName as defined in outputs
 Return Value: either "on", "off", "unknown"
 ******************************************************************************/
 String getValve(String valveName){
   bool relaisstate;
-  
-  auto it = io_map.find(valveName);
-  if(it != io_map.end()) {
-    
+
+  auto it = outputs.find(valveName);
+  if(it != outputs.end()) {
     relaisstate = !digitalRead(it->second);
     Log("valve: "+ valveName +" is "+ relaisstate);
     return (relaisstate)?"on":"off";
@@ -200,14 +242,23 @@ void MQTT_connect() {
     return;
   }
   
+  //set last-will-testament, must be set before connecting
+  MQTTClient.setWill(String(MQTTRootTopic+"/LWT").c_str(), "offline", true, 2);
+  
   while (!MQTTClient.connect(MQTTDeviceName.c_str(), MQTTUsername.c_str(), MQTTPassword.c_str())) {
     Log("could not connect to MQTT server");
     return;
   }
+  Log("connected to MQTT server");
+  
+  //announce that this device is connected
+  MQTTClient.publish(MQTTRootTopic+"/LWT", "online", true, 2);
 
-  for(auto it = topic_map.begin(); it != topic_map.end(); it++) {
-    MQTTClient.subscribe(it->first, 2);
+  for(auto i = outputs.begin(); i != outputs.end(); i++) {
+    MQTTClient.subscribe(MQTTRootTopic+"/relay/"+i->first+"/set", 2);
   }
+  
+  Log("subscribed to all topics defined in topic_map");
 }
 
 /******************************************************************************
@@ -218,10 +269,29 @@ Return Value: -
 void MQTT_messageReceived(String &topic, String &payload) {
   Log("incoming: " + topic + " - " + payload);
 
-  auto it = topic_map.find(topic);
-  if (it != topic_map.end()) {
-    it->second(payload);
+  if( MQTTMessageQueue.size() > 5 ) {
+    Log("rate of MQTT messages is very high, dropping messages!");
+    MQTTDroppedMessages++;
+    return;
   }
+
+  for(auto i = outputs.begin(); i != outputs.end(); i++) {
+    if(!topic.equals(MQTTRootTopic+"/relay/"+ i->first +"/set")) {
+        continue;
+    }
+    
+    setValve(i->first, payload);
+  }
+}
+
+/******************************************************************************
+Description.: overrule the default startup delay for NTP
+              (defined as weak function).
+Input Value.: -
+Return Value: -
+******************************************************************************/
+uint32_t sntp_startup_delay_MS_rfc_not_less_than_60000 () {
+  return 0;
 }
 
 /******************************************************************************
@@ -231,14 +301,12 @@ Return Value: -
 ******************************************************************************/
 void setup() {
   Serial.begin(115200);
+  
+  Log("");
   Log("Irrigation Controller: " __DATE__ ", " __TIME__);
 
-  //switch all relais off
-  for(auto i = io_map.begin(); i != io_map.end(); i++) {
-    Log("Set GPIO "+ String(i->second) +" as output for " + i->first);
+  for(auto i = outputs.begin(); i != outputs.end(); i++) {     
     pinMode(i->second, OUTPUT);
-    //digitalWrite(i->second, FLOW);
-    //delay(100);
     digitalWrite(i->second, NOFLOW);
   }
 
@@ -285,14 +353,40 @@ void setup() {
         Update.end(true);
       }     
       });
+      
+  server.on("/", []() {
+    struct tm tm;
+    static char buf[26];
+    time_t now = time(&now);
+    localtime_r(&now, &tm);
+    strftime (buf, sizeof(buf), R"(["%T","%d.%m.%Y"])", &tm);
+    server.send(200, "application/json", buf);
+  });
 
   server.begin();
+  
+  //get the current time to check certs for expiry
+  configTime(0, 0, NTP_SERVER);
+  setenv("TZ", TIMEZONE, 1);
+
+  time_t now = time(nullptr);
+  while (now < 3600) {
+    delay(10);
+    now = time(nullptr);
+  }
+  struct tm timeinfo;
+  gmtime_r(&now, &timeinfo);
+  Log(asctime(&timeinfo));
 
   //establish connection to MQTT server, use the ROOT-CA to authenticate
   //"net" is instanciated from a class that uses ciphers
-  net.setCACert(MQTTRootCA.c_str());
+  net.setCACert(MQTTRootCA);
+  //DO NOT USE THIS COMMAND: net.setInsecure();
+  
   MQTTClient.begin(MQTTServerName.c_str(), MQTTPort, net);
   MQTTClient.onMessage(MQTT_messageReceived);
+  
+  Log("Setup done!");
 }
 
 /******************************************************************************
@@ -306,10 +400,12 @@ void loop() {
   //handle WiFi connection and loss of connection
   if(wifiMulti.run() != WL_CONNECTED) {
     Log("WiFi NOT ok, retrying");
+    //esp_wifi_internal_set_fix_rate(WIFI_IF_STA, true, WIFI_PHY_RATE_6M);
+    //esp_wifi_set_ps(WIFI_PS_NONE);
     for(int i=0; i<10; i++) {
-	  delay(5000);
-	  if(wifiMulti.run() == WL_CONNECTED) {
-		//now the connection seems to be OK again, just leave this loop()
+      delay(5000);
+      if(wifiMulti.run() == WL_CONNECTED) {
+        //now the connection seems to be OK again, just leave this loop()
         return;
       }
     }
@@ -322,10 +418,20 @@ void loop() {
   
   //handle MQTT task
   MQTTClient.loop();
+  
+  //publish changes if there are any
+  while( !MQTTMessageQueue.empty() ) {
+    auto j = MQTTMessageQueue.front();
+    MQTTClient.publish(j.topic, j.message, true, 2);
+    MQTTMessageQueue.pop_front();
+  }
 
   //if MQTT lost connection re-establish it
   if (!MQTTClient.connected()) {
+    Log("Establish MQTT connection");
     MQTT_connect();
+    PushStatusViaMQTT();
+    then = millis();
   }
 
   if( millis()-then >= STATUS_PUSH_INTERVAL_IN_MS ) {
