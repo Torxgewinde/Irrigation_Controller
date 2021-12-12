@@ -1,10 +1,10 @@
 #!/bin/bash
 
 #Arduino IDE
-ARDUINO_VERSION_TO_USE="1.8.15"
+ARDUINO_VERSION_TO_USE="1.8.16"
 
 # Use this ESP32 compiler version
-ESP32_TOOLCHAIN_VERSION_TO_USE="1.0.4"
+ESP32_TOOLCHAIN_VERSION_TO_USE="2.0.1"
 
 # Install the following, additional libraries
 ARDUINO_LIBRARIES_TO_USE="MQTT:2.5.0"
