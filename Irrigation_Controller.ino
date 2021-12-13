@@ -1,4 +1,3 @@
-
 /*******************************************************************************
 #                                                                              #
 #     A minimal firmware for ESP32, MQTT and TLS                               #
@@ -26,13 +25,15 @@
 #include <iterator>
 #include <deque>
 
-#include <WiFi.h>
 #include <WiFiMulti.h>
 #include <WiFiClientSecure.h>
 #include <MQTT.h>
 #include <WebServer.h>
 #include <Update.h>
 #include <Ticker.h>
+
+//ESP-IDF WiFi functions
+#include "esp_wifi.h"
 
 // the board energizes relais coil on LOW which results in an opened valve
 #define FLOW    LOW
@@ -61,7 +62,7 @@ unsigned long ValveWatchdogFeedingTime = 0;
 
 #define STATUS_PUSH_INTERVAL_IN_MS 1000*60
 
-/****************************************************************************************************************/
+/*******************************************************************************/
 std::map<String, String> WiFi_map = {
   {"YOUR WIFI 1", "yourwifipassword"},
   {"YOUR WIFI 2", "yourwifipassword"},
@@ -74,9 +75,9 @@ String UpdatePassword = "Passwort";
 //https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv
 //configure DST, Timezone and NTP server
 #define TIMEZONE "CET-1CEST,M3.5.0,M10.5.0/3"
-#define NTP_SERVER "your_timeserver.tld"
+#define NTP_SERVER "time-server.lan"
 
-String MQTTServerName = "mqttserver.lan";
+String MQTTServerName = "mqtt-server.lan";
 uint16_t MQTTPort = 8883;
 String MQTTUsername = "username";
 String MQTTPassword = "supersecret";
@@ -101,6 +102,8 @@ const char MQTTRootCA[] PROGMEM = R"CERT(
 123456=
 -----END CERTIFICATE-----
 )CERT";
+
+/*******************************************************************************/
 
 //define outputs of device: "name", GPIO
 std::map<String, int> outputs = {
@@ -148,6 +151,18 @@ void PushStatusViaMQTT() {
     "\"RSSI\":"+String(WiFi.RSSI())+", "+
     "\"MQTTDroppedMessages\":"+String(MQTTDroppedMessages)+
   "}", true, 2);
+
+  int8_t max_tx = -1;
+  esp_wifi_get_max_tx_power(&max_tx);
+  char CC[] = "--";
+  esp_wifi_get_country_code(CC);
+
+  MQTTClient.publish(MQTTRootTopic+"/status3",
+  "{"
+    "\"TX power\":"+String(max_tx)+", "+
+    "\"Country\":\""+String(CC)+"\", "+
+    "\"BSSID\":\""+WiFi.BSSIDstr()+"\""+
+  "}", true, 2);
 }
 
 /******************************************************************************
@@ -186,7 +201,7 @@ void setValve(String valveName, String state){
       continue;
     }
 
-    // set all other valves to off, inform if a state change was necessary
+    // set all other valves to NOFLOW, inform if a state change was necessary
     if( digitalRead(jt->second) == FLOW ) {
       digitalWrite(jt->second, NOFLOW);
 
@@ -218,13 +233,9 @@ Input Value.: ValveName as defined in outputs
 Return Value: either "on", "off", "unknown"
 ******************************************************************************/
 String getValve(String valveName){
-  bool relaisstate;
-
   auto it = outputs.find(valveName);
   if(it != outputs.end()) {
-    relaisstate = !digitalRead(it->second);
-    Log("valve: "+ valveName +" is "+ relaisstate);
-    return (relaisstate)?"on":"off";
+    return (digitalRead(it->second) == FLOW)?"on":"off";
   } else {
     Log("unknown valve: "+ valveName);
     return "unknown";  
@@ -275,6 +286,7 @@ void MQTT_messageReceived(String &topic, String &payload) {
     return;
   }
 
+  //search through outputs and compare, if it fits setValve
   for(auto i = outputs.begin(); i != outputs.end(); i++) {
     if(!topic.equals(MQTTRootTopic+"/relay/"+ i->first +"/set")) {
         continue;
@@ -317,9 +329,14 @@ void setup() {
 
   //try to connect
   if(wifiMulti.run() == WL_CONNECTED) {
-    Log("WiFi OK");
-    Log(WiFi.localIP().toString());
+    Log("WiFi.: connected");
+    Log("IP...: "+ WiFi.localIP().toString());
+    Log("BSSID: "+ WiFi.BSSIDstr());
   }
+  
+  // disable power save
+  // it improved stability in my case, device is mains powered anyway
+  esp_wifi_set_ps(WIFI_PS_NONE);
 
   //allow an authenticated HTTP upload with new firmware images
   //others who already know the WiFi keys can sniff the password
@@ -353,13 +370,14 @@ void setup() {
         Update.end(true);
       }     
       });
-      
+
+  //the webservers default page
   server.on("/", []() {
     struct tm tm;
     static char buf[26];
     time_t now = time(&now);
     localtime_r(&now, &tm);
-    strftime (buf, sizeof(buf), R"(["%T","%d.%m.%Y"])", &tm);
+    strftime(buf, sizeof(buf), R"(["%T","%d.%m.%Y"])", &tm);
     server.send(200, "application/json", buf);
   });
 
@@ -400,9 +418,8 @@ void loop() {
   //handle WiFi connection and loss of connection
   if(wifiMulti.run() != WL_CONNECTED) {
     Log("WiFi NOT ok, retrying");
-    //esp_wifi_internal_set_fix_rate(WIFI_IF_STA, true, WIFI_PHY_RATE_6M);
-    //esp_wifi_set_ps(WIFI_PS_NONE);
     for(int i=0; i<10; i++) {
+      Log("Try #: "+String(i));
       delay(5000);
       if(wifiMulti.run() == WL_CONNECTED) {
         //now the connection seems to be OK again, just leave this loop()
@@ -416,22 +433,22 @@ void loop() {
   //handle webserver task
   server.handleClient();
   
-  //handle MQTT task
-  MQTTClient.loop();
-  
-  //publish changes if there are any
-  while( !MQTTMessageQueue.empty() ) {
-    auto j = MQTTMessageQueue.front();
-    MQTTClient.publish(j.topic, j.message, true, 2);
-    MQTTMessageQueue.pop_front();
-  }
-
   //if MQTT lost connection re-establish it
   if (!MQTTClient.connected()) {
     Log("Establish MQTT connection");
     MQTT_connect();
     PushStatusViaMQTT();
     then = millis();
+  }
+  
+  //handle MQTT task
+  MQTTClient.loop();
+  
+  //publish changes if there are any
+  while( !MQTTMessageQueue.empty() ) {
+    auto j = MQTTMessageQueue.front();
+    MQTTClient.publish(j.topic, j.message, j.retained, j.qos);
+    MQTTMessageQueue.pop_front();
   }
 
   if( millis()-then >= STATUS_PUSH_INTERVAL_IN_MS ) {
