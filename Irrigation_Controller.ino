@@ -102,7 +102,6 @@ const char MQTTRootCA[] PROGMEM = R"CERT(
 123456=
 -----END CERTIFICATE-----
 )CERT";
-
 /*******************************************************************************/
 
 //define outputs of device: "name", GPIO
@@ -139,10 +138,16 @@ void PushStatusViaMQTT() {
       true, 2);
   }
 
+  //calculate remaining watchdogTime
+  unsigned long watchdogTime = constrain(millis()-ValveWatchdogFeedingTime,
+                                         0,
+                                         MAX_VALVE_ON_TIME_IN_S*1000);
+  watchdogTime = MAX_VALVE_ON_TIME_IN_S*1000 - watchdogTime;
+  
   MQTTClient.publish(MQTTRootTopic+"/status1",
   "{"
     "\"FreeHeap\":"+String(ESP.getFreeHeap())+", "+
-    "\"ValveWatchdogLastFed\":"+String(millis() - ValveWatchdogFeedingTime)+", "+
+    "\"WatchdogTime\":"+String(watchdogTime)+", "+
     "\"uptime\":"+String(millis())+
   "}", true, 2);
   
@@ -167,28 +172,25 @@ void PushStatusViaMQTT() {
 
 /******************************************************************************
 Description.: set a valve to open or close, switch all other valves to off
-Input Value.: ValveName as defined in outputs
-              state is either "on" for flow or "off" for no-flow, other strings
-              default to no-flow
+Input Value.: ValveName as defined in outputs or "all"
+              state is either "on" for flow or "off" for no-flow,
+              other strings default to no-flow
 Return Value: -
 ******************************************************************************/
-void setValve(String valveName, String state){
-  bool relaisstate = (state == "on") ? FLOW : NOFLOW;
-
+void setValve(String valveName, String state) {
   auto it = outputs.find(valveName);
 
   // valve name not found, leave this function
-  if(it == outputs.end()) {
+  if(it == outputs.end() && !valveName.equals("all")) {
     Log("unknown valveName: "+ valveName);
     return;
   }
 
-  for(auto jt = outputs.begin(); jt != outputs.end(); jt++) {
-    FeedValveWatchdog();
-    
-    // check if iterators are identical, if yes set it to the desired state which might be "on" or "off"
+  for(auto jt = outputs.begin(); jt != outputs.end(); jt++) {    
+    // check if iterators are identical, if yes set it to the desired state which might be FLOW or NOFLOW
     if ( jt == it ) {
-      digitalWrite(jt->second, relaisstate);
+      FeedValveWatchdog();
+      digitalWrite(jt->second, (state == "on") ? FLOW : NOFLOW);
 
       struct MQTTMessageQueueItem a;
       a.message  = (state == "on") ? state : "off";
@@ -217,13 +219,14 @@ void setValve(String valveName, String state){
 }
 
 /******************************************************************************
-Description.: Watchdog forces valves to off-state if no other command was received
+Description.: Watchdog forces valves to NOFLOW if no other command was
+              received for a long time (=MAX_VALVE_ON_TIME_IN_S).
 Input Value.: -
 Return Value: -
 ******************************************************************************/
 void FeedValveWatchdog(){
   ValveWatchdog.detach();
-  ValveWatchdog.attach(MAX_VALVE_ON_TIME_IN_S, [](){setValve("0", "off");});
+  ValveWatchdog.once(MAX_VALVE_ON_TIME_IN_S, [](){setValve("all", "off");});
   ValveWatchdogFeedingTime = millis();
 }
 
@@ -319,7 +322,7 @@ void setup() {
 
   for(auto i = outputs.begin(); i != outputs.end(); i++) {     
     pinMode(i->second, OUTPUT);
-    digitalWrite(i->second, NOFLOW);
+    setValve(i->first, "off");
   }
 
   //allow for many WiFi APs
