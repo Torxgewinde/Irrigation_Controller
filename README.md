@@ -28,6 +28,9 @@ Hardware
   
   Design notes
   ----------------
+  [Schematic](https://github.com/Torxgewinde/Irrigation_Controller/raw/master/pictures/Irrigation_schem.jpg)  
+  [Picture with overlay](https://github.com/Torxgewinde/Irrigation_Controller/raw/master/pictures/Superimposed.jpg) 
+    
   Irrigation valves are designed for 24VAC (alternating current, not DC). This is the most common voltage across different brands. Due to this a transformer is required. This transformer is connected to the mains for probably years and must withstand possible transient voltages (voltage spikes) that might occur. Long lasting and cheap are DIN-rail mounted doorbell transformers, but those either do not specify the idle current or it is not really good. A toroid transformer has fewer losses (~40 times less losses than rectangular transformers in idle state). Regardless of the transformer, the output must provide a safe isolation between input and output. Look for appropriate safety marks, otherwise the output might sooner or later become a hazardous voltage.
 
 It would be possible to simply use a SONOFF 4CH, but that would introduce another transformer (internal to the device) with a little extra idle current.
